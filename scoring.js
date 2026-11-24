@@ -207,7 +207,15 @@
       edgeCount += e[i];
       if (e[i] && m[i] && !rimD[i]) { inner[i] = 1; innerCount++; }
     }
+    // Normalised colour image with background forced to white (for colour-mode comparison)
+    const pix = new Uint8ClampedArray(N * N * 3);
+    for (let i = 0; i < N * N; i++) {
+      const r = npx[i * 4], g = npx[i * 4 + 1], b = npx[i * 4 + 2];
+      const isBg = !m[i] || rgbDist(r, g, b, bg[0], bg[1], bg[2]) < 30;
+      pix[i * 3] = isBg ? 255 : r; pix[i * 3 + 1] = isBg ? 255 : g; pix[i * 3 + 2] = isBg ? 255 : b;
+    }
     return {
+      pix,
       mask: m, edges: e, hist, grid, aspect: bw / bh, coverage: count / (w * h),
       extent: Math.max(bw / w, bh / h), // how much of the canvas the subject spans
       edgeCount, inner, innerCount,
@@ -265,6 +273,111 @@
     return { shape, detail, color };
   }
 
+  // ---- Colour mode: robust to pose, shade and missing outlines ----
+  // Players can only use the game's swatches, so both images are snapped to the
+  // nearest swatch colour (in Lab space) before comparing which colours sit where.
+  const SWATCHES = ['#111111', '#7a7a7a', '#e53935', '#ff8a3d', '#ffd23f', '#fff3a0', '#43c463',
+    '#1e7a3c', '#3ddcff', '#1e5fd6', '#13235e', '#9b6bff', '#ff5c8a', '#f7c6a5', '#8b5a2b', '#ffffff'];
+  const WHITE = SWATCHES.length - 1, BLACK = 0;
+  // Colour families: black, grey, red/pink, orange/brown/skin, yellow, green, blue, purple, white
+  const FAMILY = [0, 1, 2, 3, 4, 4, 5, 5, 6, 6, 6, 7, 2, 3, 3, 8];
+  function lab(r, g, b) {
+    const f = (c) => { c /= 255; return c > 0.04045 ? ((c + 0.055) / 1.055) ** 2.4 : c / 12.92; };
+    const R = f(r), G = f(g), B = f(b);
+    let X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047, Y = R * 0.2126 + G * 0.7152 + B * 0.0722, Z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+    const h = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    X = h(X); Y = h(Y); Z = h(Z);
+    return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+  }
+  const SW_LAB = SWATCHES.map((hx) => lab(parseInt(hx.slice(1, 3), 16), parseInt(hx.slice(3, 5), 16), parseInt(hx.slice(5, 7), 16)));
+  const snapCache = new Map();
+  function snap(r, g, b) {
+    const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    let v = snapCache.get(key);
+    if (v !== undefined) return v;
+    const [L, A, B] = lab(r, g, b);
+    let best = 0, bd = Infinity;
+    for (let k = 0; k < SW_LAB.length; k++) {
+      const q = SW_LAB[k];
+      // chroma differences matter more than lightness for "is it the same colour"
+      const d = 0.6 * (L - q[0]) ** 2 + (A - q[1]) ** 2 + (B - q[2]) ** 2;
+      if (d < bd) { bd = d; best = k; }
+    }
+    snapCache.set(key, best);
+    return best;
+  }
+  function snapped(pix) {
+    const out = new Uint8Array(N * N);
+    for (let i = 0; i < N * N; i++) out[i] = snap(pix[i * 3], pix[i * 3 + 1], pix[i * 3 + 2]);
+    return out;
+  }
+  function colourMode(a, b) {
+    const sa = snapped(a.pix), sb = snapped(b.pix);
+    // Global palette: which swatches are used (paper ignored, outline black down-weighted)
+    const ha = new Float32Array(16), hb = new Float32Array(16);
+    for (let i = 0; i < N * N; i++) {
+      if (sa[i] !== WHITE) ha[sa[i]] += sa[i] === BLACK ? 0.35 : 1;
+      if (sb[i] !== WHITE) hb[sb[i]] += sb[i] === BLACK ? 0.35 : 1;
+    }
+    const na = ha.reduce((p, q) => p + q, 0) || 1, nb = hb.reduce((p, q) => p + q, 0) || 1;
+    let exact = 0;
+    for (let k = 0; k < 16; k++) exact += Math.min(ha[k] / na, hb[k] / nb);
+    const fa = new Float32Array(9), fb = new Float32Array(9);
+    for (let k = 0; k < 16; k++) { fa[FAMILY[k]] += ha[k] / na; fb[FAMILY[k]] += hb[k] / nb; }
+    let fam = 0;
+    for (let k = 0; k < 9; k++) fam += Math.min(fa[k], fb[k]);
+    const pal = 0.4 * exact + 0.6 * fam;
+    // Share of real colour (not black/grey/white) in each image
+    const colourful = (h, n) => { let c = 0; for (let k = 2; k < 15; k++) c += h[k]; return c / n; };
+    const ca0 = colourful(ha, na), cb0 = colourful(hb, nb);
+
+    // 6x6 layout: per-cell swatch distribution (including paper) overlap
+    const G = 6;
+    let ls = 0, lw = 0;
+    for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+      const ca = new Float32Array(16), cb = new Float32Array(16);
+      let n = 0, fa = 0, fb = 0;
+      const y0 = Math.floor(gy * N / G), y1 = Math.floor((gy + 1) * N / G);
+      const x0 = Math.floor(gx * N / G), x1 = Math.floor((gx + 1) * N / G);
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const i = y * N + x;
+        ca[sa[i]]++; cb[sb[i]]++; n++;
+        if (sa[i] !== WHITE) fa++;
+        if (sb[i] !== WHITE) fb++;
+      }
+      fa /= n; fb /= n;
+      if (fa < 0.12 && fb < 0.12) continue;
+      let ov = 0;
+      for (let k = 0; k < 16; k++) ov += Math.min(ca[k], cb[k]) / n;
+      const w = Math.max(fa, fb);
+      ls += w * ov; lw += w;
+    }
+    const layout = lw ? ls / lw : 0;
+
+    // 16x16 soft silhouette overlap
+    const S = 16, ss = N / S;
+    let mn = 0, mx = 0;
+    for (let gy = 0; gy < S; gy++) for (let gx = 0; gx < S; gx++) {
+      let ca = 0, cb = 0;
+      for (let y = gy * ss; y < (gy + 1) * ss; y++) for (let x = gx * ss; x < (gx + 1) * ss; x++) { ca += a.mask[y * N + x]; cb += b.mask[y * N + x]; }
+      mn += Math.min(ca, cb); mx += Math.max(ca, cb);
+    }
+    const sil = mx ? mn / mx : 0;
+    // A black-only doodle can't win on colour against a colourful character
+    let inkPenalty = cb0 > 0.3 ? Math.min(1, 0.25 + ca0 / 0.25) : 1;
+    // Colour credit needs the shape to actually be coloured in (outline drawings use line mode)
+    const fill = (sx, m) => { let f = 0, t = 0; for (let i = 0; i < N * N; i++) if (m[i]) { t++; if (sx[i] !== WHITE) f++; } return t ? f / t : 0; };
+    const fillA = fill(sa, a.mask), fillB = fill(sb, b.mask);
+    inkPenalty *= Math.min(1, fillA / Math.max(0.05, 0.8 * fillB));
+    // ...and a single-colour blob doesn't capture a multi-coloured character
+    const used = (h, n) => { let u = 0; for (let k = 0; k < 15; k++) if (k !== 1 && h[k] / n >= 0.04) u++; return u; }; // grey skipped: it's mostly anti-aliasing
+    const ua = used(ha, na), ub = used(hb, nb);
+    inkPenalty *= 0.5 + 0.5 * Math.min(1, ua / Math.min(3, Math.max(1, ub)));
+    // For black-and-white characters colour tells us little; lean on line work instead
+    inkPenalty *= Math.min(1, 0.1 + cb0 / 0.4);
+    return { pal, layout, sil, inkPenalty, fillA, fillB, ua, ub, refColour: cb0 };
+  }
+
   // Generic "zero-effort" drawings. Whatever these score against a character is
   // treated as chance level, so a dot or a circle can't earn points on its own.
   let baselineShapes;
@@ -300,32 +413,33 @@
       if (!r) return { total: 0, shape: 0, detail: 0, color: 0 };
       const raw = compare(d, r);
 
-      // Chance level for this character = best a generic doodle achieves
+      // --- Line mode: credit for getting the line work right (good for outline drawings) ---
       const base = { shape: 0, detail: 0, color: 0 };
       for (const g of genericShapes()) {
         const b = compare(g, r);
         for (const k in base) base[k] = Math.max(base[k], b[k]);
       }
-      // Never let chance level drop below a sensible floor
-      base.shape = Math.max(base.shape, 0.45);
       base.detail = Math.max(base.detail, 0.35);
-      base.color = Math.max(base.color, 0.1);
+      const de = rel(raw.detail, base.detail, 0.88);
+      const lineScore = Math.pow(de, 1.15) * (0.75 + 0.25 * rel(raw.shape, base.shape - 0.25, 0.97));
 
-      // Line work is the gate: it is the one thing a blob, dot or scribble can't fake.
-      // Outline shape and colours only boost a drawing that already has the right lines.
-      const de = rel(raw.detail, base.detail, 0.9);
-      const s = rel(raw.shape, base.shape - 0.2, 0.97);
-      const c = rel(raw.color, base.color, 0.75);
-      let t = Math.pow(de, 1.3) * (0.55 + 0.25 * s + 0.2 * c);
+      // --- Colour mode: right colours, roughly in the right places, roughly the right shape ---
+      const cm = colourMode(d, r);
+      const colourRaw = 0.45 * cm.pal + 0.3 * cm.layout + 0.25 * cm.sil;
+      const colourScore = rel(colourRaw, 0.3, 0.7) * cm.inkPenalty;
 
-      // Effort: tiny drawings and drawings with far less line work than the character lose points
-      const sizeF = Math.min(1, d.extent / 0.35);
-      const inkF = Math.min(1, (d.edgeCount / Math.max(1, r.edgeCount)) / 0.35);
-      t *= Math.pow(sizeF, 1.5) * (0.4 + 0.6 * inkF);
+      let t = Math.max(lineScore, colourScore, 0.6 * lineScore + 0.6 * colourScore);
 
-      const pct = (v) => Math.round(100 * Math.pow(v, 0.8));
+      // Effort: tiny drawings and near-empty drawings lose points
+      const sizeF = Math.min(1, d.extent / 0.3);
+      const inkF = Math.min(1, d.coverage / 0.02);
+      t *= Math.pow(sizeF, 1.5) * (0.5 + 0.5 * inkF);
+
+      const s = rel(raw.shape, base.shape - 0.25, 0.97);
+      const c = Math.max(rel(raw.color, base.color, 0.75), rel(cm.pal, 0.2, 0.8));
+      const pct = (v) => Math.round(100 * Math.pow(v, 0.72));
       const total = Math.max(0, Math.min(100, pct(t)));
-      return { total, shape: pct(s), detail: pct(de), color: pct(c), raw, base };
+      return { total, shape: pct(Math.max(s, rel(cm.sil, 0.3, 0.8))), detail: pct(de), color: pct(c), raw, base, cm, lineScore, colourScore };
     },
   };
 })();
