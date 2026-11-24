@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Draw That Character — 60 seconds, no peeking</title>
+  <meta name="description" content="You get a cartoon character's name and 60 seconds to draw it from memory. Then see your drawing next to the real thing and find out how close you got." />
+  <meta name="theme-color" content="#1a1240" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta property="og:title" content="Draw That Character" />
+  <meta property="og:description" content="60 seconds. One cartoon legend. No peeking. How close can you get?" />
+  <meta property="og:image" content="/og.png" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="/og.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="bg-doodles" aria-hidden="true">
+    <svg class="dd d1" viewBox="0 0 60 60"><path d="M30 4l7 17 18 2-14 12 4 18-15-9-15 9 4-18L5 23l18-2z" /></svg>
+    <svg class="dd d2" viewBox="0 0 80 40"><path d="M4 30c10-26 20-26 24 0s14 26 24 0 16-26 24 0" /></svg>
+    <svg class="dd d3" viewBox="0 0 60 60"><circle cx="30" cy="30" r="22" /><circle cx="22" cy="25" r="3" /><circle cx="38" cy="25" r="3" /><path d="M20 37q10 9 20 0" /></svg>
+    <svg class="dd d4" viewBox="0 0 60 60"><path d="M30 30m-4 0a4 4 0 1 1 8 0a8 8 0 1 1-16 0a12 12 0 1 1 24 0a16 16 0 1 1-32 0" /></svg>
+    <svg class="dd d5" viewBox="0 0 60 60"><path d="M30 52S6 38 6 22a12 12 0 0 1 24-4 12 12 0 0 1 24 4c0 16-24 30-24 30z" /></svg>
+    <svg class="dd d6" viewBox="0 0 60 60"><path d="M10 50L50 10M38 10h12v12" /></svg>
+  </div>
+
+  <button id="muteBtn" class="icon-btn mute" aria-label="Toggle sound" title="Sound">🔊</button>
+
+  <!-- HOME -->
+  <section id="home" class="screen active">
+    <div class="hero">
+      <img src="/icon.svg" alt="" class="hero-icon" width="112" height="112" />
+      <h1 class="logo">
+        <span class="w1">Draw</span>
+        <span class="w2">That</span>
+        <span class="w3">Character!</span>
+      </h1>
+      <p class="tagline">You get a name. You get <b>60 seconds</b>. You <b>don't</b> get to peek.<br/>Then we show you the real thing.</p>
+      <div class="cta-row">
+        <button id="playBtn" class="btn btn-primary btn-xl">▶ Play</button>
+        <button id="dailyBtn" class="btn btn-pink">📅 Daily Challenge</button>
+      </div>
+      <div class="cats" id="cats" role="group" aria-label="Character categories"></div>
+      <div class="stats" id="stats"></div>
+    </div>
+
+    <div class="how">
+      <div class="how-card"><div class="how-num">1</div><div class="how-emoji">🎲</div><h3>Get a character</h3><p>Over 250 cartoon, anime, Disney &amp; video game icons.</p></div>
+      <div class="how-card"><div class="how-num">2</div><div class="how-emoji">✏️</div><h3>Draw from memory</h3><p>60 seconds on the clock. No reference. Pure vibes.</p></div>
+      <div class="how-card"><div class="how-num">3</div><div class="how-emoji">🔍</div><h3>The big reveal</h3><p>Side-by-side with the real one, plus your match %.</p></div>
+    </div>
+
+    <div class="gallery-wrap" id="galleryWrap" hidden>
+      <h2>Your Hall of Fame <small>(and shame)</small></h2>
+      <div id="gallery" class="gallery"></div>
+    </div>
+
+    <footer class="foot">
+      Fan-made party game. Characters belong to their respective owners; reference images are loaded from Wikipedia.
+    </footer>
+  </section>
+
+  <!-- INTRO (character reveal by name) -->
+  <section id="intro" class="screen">
+    <div class="intro-card">
+      <div class="intro-label" id="introLabel">Your character is…</div>
+      <div class="slot"><div class="slot-name" id="slotName">???</div></div>
+      <div class="intro-cat" id="introCat"></div>
+      <div class="intro-actions" id="introActions">
+        <button id="readyBtn" class="btn btn-primary btn-xl">✏️ I'm ready!</button>
+        <button id="rerollBtn" class="btn btn-ghost">🎲 Who? Re-roll</button>
+      </div>
+      <button class="link-btn" id="introHome">← Back home</button>
+    </div>
+  </section>
+
+  <!-- DRAW -->
+  <section id="draw" class="screen">
+    <div class="draw-top">
+      <div class="draw-title">
+        <span class="draw-sub">Draw</span>
+        <span class="draw-name" id="drawName">Name</span>
+      </div>
+      <div class="timer" id="timer">
+        <svg viewBox="0 0 100 100"><circle class="t-bg" cx="50" cy="50" r="44" /><circle class="t-fg" id="timerRing" cx="50" cy="50" r="44" /></svg>
+        <span id="timerText">60</span>
+      </div>
+    </div>
+
+    <div class="draw-layout">
+      <div class="tools" id="tools">
+        <div class="tool-group">
+          <button class="tool active" data-tool="pen" title="Brush (B)">🖌️</button>
+          <button class="tool" data-tool="fill" title="Fill bucket (F)">🪣</button>
+          <button class="tool" data-tool="eraser" title="Eraser (E)">🧽</button>
+        </div>
+        <div class="tool-group sizes">
+          <button class="size" data-size="4" title="Thin"><i style="width:6px;height:6px"></i></button>
+          <button class="size active" data-size="10" title="Medium"><i style="width:12px;height:12px"></i></button>
+          <button class="size" data-size="22" title="Thick"><i style="width:20px;height:20px"></i></button>
+          <button class="size" data-size="48" title="Huge"><i style="width:28px;height:28px"></i></button>
+        </div>
+        <div class="tool-group">
+          <button class="tool" id="undoBtn" title="Undo (Ctrl+Z)">↩️</button>
+          <button class="tool" id="clearBtn" title="Clear">🗑️</button>
+        </div>
+      </div>
+
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="pad" width="720" height="720"></canvas>
+        <div class="stamp" id="stamp">TIME'S UP!</div>
+      </div>
+
+      <div class="palette" id="palette"></div>
+    </div>
+
+    <div class="draw-bottom">
+      <button id="doneBtn" class="btn btn-primary">✅ I'm done — reveal!</button>
+    </div>
+  </section>
+
+  <!-- REVEAL -->
+  <section id="reveal" class="screen">
+    <h2 class="reveal-title" id="revealTitle">The moment of truth…</h2>
+    <div class="compare">
+      <figure class="card tilt-l">
+        <div class="card-frame"><img id="yourImg" alt="Your drawing" /></div>
+        <figcaption>Your masterpiece</figcaption>
+      </figure>
+      <div class="vs">VS</div>
+      <figure class="card tilt-r flip" id="refCard">
+        <div class="flip-inner">
+          <div class="flip-back">?</div>
+          <div class="flip-front card-frame"><img id="refImg" alt="" /></div>
+        </div>
+        <figcaption><span id="refName">The real one</span> <a id="refLink" target="_blank" rel="noopener" class="src">source</a></figcaption>
+      </figure>
+    </div>
+
+    <div class="score-box" id="scoreBox">
+      <div class="score-num"><span id="scoreNum">0</span><small>%</small></div>
+      <div class="score-verdict" id="verdict">&nbsp;</div>
+      <div class="bars">
+        <div class="bar"><label>Shape</label><div class="track"><div class="fill f-shape" id="barShape"></div></div><span id="valShape">0</span></div>
+        <div class="bar"><label>Lines</label><div class="track"><div class="fill f-detail" id="barDetail"></div></div><span id="valDetail">0</span></div>
+        <div class="bar"><label>Colors</label><div class="track"><div class="fill f-color" id="barColor"></div></div><span id="valColor">0</span></div>
+      </div>
+      <div class="best-flag" id="bestFlag" hidden>🏆 New personal best!</div>
+    </div>
+
+    <div class="reveal-actions">
+      <button id="nextBtn" class="btn btn-primary btn-xl">Next character ▶</button>
+      <button id="shareBtn" class="btn btn-pink">📤 Share</button>
+      <button id="homeBtn" class="btn btn-ghost">🏠 Home</button>
+    </div>
+  </section>
+
+  <div class="countdown" id="countdown" hidden><span id="countNum">3</span></div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="modal-card">
+      <button class="icon-btn modal-close" id="modalClose" aria-label="Close">✕</button>
+      <h3 id="modalTitle"></h3>
+      <div class="modal-compare">
+        <img id="modalYour" alt="Your drawing" />
+        <img id="modalRef" alt="Reference" />
+      </div>
+      <div class="modal-score" id="modalScore"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <script src="/characters.js"></script>
+  <script src="/scoring.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
