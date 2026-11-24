@@ -194,7 +194,24 @@
     }
     if (total) for (let k = 0; k < 15; k++) hist[k] /= total;
 
-    return { mask: m, edges: e, hist, grid, aspect: bw / bh, coverage: count / (w * h) };
+    // Interior lines (eyes, mouths, clothing…) = edges away from the silhouette outline
+    const rim = new Uint8Array(N * N);
+    for (let y = 1; y < N - 1; y++) for (let x = 1; x < N - 1; x++) {
+      const i = y * N + x;
+      if (m[i] && (!m[i - 1] || !m[i + 1] || !m[i - N] || !m[i + N])) rim[i] = 1;
+    }
+    const rimD = dilate(rim, N, N, 2);
+    const inner = new Uint8Array(N * N);
+    let edgeCount = 0, innerCount = 0;
+    for (let i = 0; i < N * N; i++) {
+      edgeCount += e[i];
+      if (e[i] && m[i] && !rimD[i]) { inner[i] = 1; innerCount++; }
+    }
+    return {
+      mask: m, edges: e, hist, grid, aspect: bw / bh, coverage: count / (w * h),
+      extent: Math.max(bw / w, bh / h), // how much of the canvas the subject spans
+      edgeCount, inner, innerCount,
+    };
   }
 
   function compare(a, b) {
@@ -214,7 +231,19 @@
       if (b.edges[i]) { s2 += Math.min(da[i], 20); n2++; }
     }
     const cd = ((n1 ? s1 / n1 : 20) + (n2 ? s2 / n2 : 20)) / 2;
-    const detail = Math.exp(-cd / 4.2);
+    let detail = Math.exp(-cd / 4.2);
+
+    // Interior line work: does the drawing have features where the character has them?
+    if (b.innerCount >= 12) {
+      const ia = distTransform(a.inner, N, N), ib = distTransform(b.inner, N, N);
+      let p1 = 0, m1 = 0, p2 = 0, m2 = 0;
+      for (let i = 0; i < N * N; i++) {
+        if (b.inner[i]) { p1 += Math.min(ia[i], 20); m1++; }
+        if (a.inner[i]) { p2 += Math.min(ib[i], 20); m2++; }
+      }
+      const icd = ((m1 ? p1 / m1 : 20) + (m2 ? p2 / m2 : 20)) / 2;
+      detail = 0.5 * detail + 0.5 * Math.exp(-icd / 4.2);
+    }
 
     // Colour palette similarity (histogram intersection)
     let hi = 0;
@@ -236,10 +265,30 @@
     return { shape, detail, color };
   }
 
-  // Map raw 0..1 similarity onto a friendlier 0..100 scale.
-  function curve(v, lo, hi) {
-    const t = Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
-    return Math.round(100 * Math.pow(t, 0.72));
+  // Generic "zero-effort" drawings. Whatever these score against a character is
+  // treated as chance level, so a dot or a circle can't earn points on its own.
+  let baselineShapes;
+  function genericShapes() {
+    if (baselineShapes) return baselineShapes;
+    const S = 240;
+    const draw = (fn) => { const c = mk(S, S); const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, S, S); x.strokeStyle = x.fillStyle = '#111'; x.lineWidth = 6; x.lineCap = 'round'; fn(x); return analyze(c, true); };
+    baselineShapes = [
+      draw((x) => { x.beginPath(); x.arc(120, 120, 90, 0, 7); x.fill(); }),                 // blob / dot
+      draw((x) => { x.beginPath(); x.arc(120, 120, 90, 0, 7); x.stroke(); }),               // circle outline
+      draw((x) => { x.beginPath(); x.ellipse(120, 120, 60, 100, 0, 0, 7); x.fill(); }),     // tall blob
+      draw((x) => { x.beginPath(); x.ellipse(120, 120, 60, 100, 0, 0, 7); x.stroke(); }),   // tall outline
+      draw((x) => { x.fillRect(30, 30, 180, 180); }),                                       // square
+      draw((x) => { x.strokeRect(30, 30, 180, 180); }),                                     // box outline
+      draw((x) => { x.beginPath(); x.arc(120, 80, 45, 0, 7); x.moveTo(120, 125); x.lineTo(120, 190); x.moveTo(70, 150); x.lineTo(170, 150); x.moveTo(120, 190); x.lineTo(85, 230); x.moveTo(120, 190); x.lineTo(155, 230); x.stroke(); }), // stick figure
+      draw((x) => { x.beginPath(); x.arc(120, 120, 90, 0, 7); x.moveTo(95, 100); x.arc(90, 100, 5, 0, 7); x.moveTo(155, 100); x.arc(150, 100, 5, 0, 7); x.moveTo(80, 140); x.quadraticCurveTo(120, 180, 160, 140); x.stroke(); }), // smiley
+    ];
+    return baselineShapes;
+  }
+
+  // Rescale a raw similarity so chance level -> 0 and a near-perfect match -> 1.
+  function rel(v, base, ceil) {
+    const lo = Math.min(base, ceil - 0.05);
+    return Math.min(1, Math.max(0, (v - lo) / (ceil - lo)));
   }
 
   window.Scoring = {
@@ -250,14 +299,33 @@
       const r = analyze(refImg, false);
       if (!r) return { total: 0, shape: 0, detail: 0, color: 0 };
       const raw = compare(d, r);
-      const shape = curve(raw.shape, 0.5, 0.93);
-      const detail = curve(raw.detail, 0.45, 0.9);
-      const color = curve(raw.color, 0.12, 0.72);
-      let total = Math.round(0.4 * shape + 0.35 * detail + 0.25 * color);
-      // A scribble that barely covers anything shouldn't score well
-      if (d.coverage < 0.004) total = Math.round(total * 0.4);
-      total = Math.max(1, Math.min(100, total));
-      return { total, shape, detail, color, raw };
+
+      // Chance level for this character = best a generic doodle achieves
+      const base = { shape: 0, detail: 0, color: 0 };
+      for (const g of genericShapes()) {
+        const b = compare(g, r);
+        for (const k in base) base[k] = Math.max(base[k], b[k]);
+      }
+      // Never let chance level drop below a sensible floor
+      base.shape = Math.max(base.shape, 0.45);
+      base.detail = Math.max(base.detail, 0.35);
+      base.color = Math.max(base.color, 0.1);
+
+      // Line work is the gate: it is the one thing a blob, dot or scribble can't fake.
+      // Outline shape and colours only boost a drawing that already has the right lines.
+      const de = rel(raw.detail, base.detail, 0.9);
+      const s = rel(raw.shape, base.shape - 0.2, 0.97);
+      const c = rel(raw.color, base.color, 0.75);
+      let t = Math.pow(de, 1.3) * (0.55 + 0.25 * s + 0.2 * c);
+
+      // Effort: tiny drawings and drawings with far less line work than the character lose points
+      const sizeF = Math.min(1, d.extent / 0.35);
+      const inkF = Math.min(1, (d.edgeCount / Math.max(1, r.edgeCount)) / 0.35);
+      t *= Math.pow(sizeF, 1.5) * (0.4 + 0.6 * inkF);
+
+      const pct = (v) => Math.round(100 * Math.pow(v, 0.8));
+      const total = Math.max(0, Math.min(100, pct(t)));
+      return { total, shape: pct(s), detail: pct(de), color: pct(c), raw, base };
     },
   };
 })();
